@@ -1,0 +1,26 @@
+{
+  "invoice_information": {
+    "invoice_type": "Tax Invoice",
+    "invoice_number": "B209",
+    "invoice_date": "18-Apr-2019"
+  },
+  "seller_details": {
+    "seller_name": "Ace Mobile Manufacturer Pvt Ltd",
+    "seller_state": "Uttar Pradesh",
+    "seller_gstin": null
+  },
+  "buyer_details": {
+    "buyer_name": "The Mobile Planet",
+    "buyer_state": null,
+    "buyer_gstin": null
+  },
+  "financial_summary": {
+    "taxable_amount": 8600000.0,
+    "cgst_amount": 516000.0,
+    "sgst_amount": 516000.0,
+    "total_tax": 1032000.0,
+    "final_payable_amount": 9632000.0,
+    "currency": "INR",
+    "total_quantity": null
+  }
+}
