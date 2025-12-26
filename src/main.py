@@ -1,75 +1,144 @@
-import easyocr
+import cv2
+import pytesseract
 import re
 import json
 import os
 
-# ---------------- OCR ----------------
-def extract_text(image_path):
-    reader = easyocr.Reader(['en'], gpu=False)
-    return " ".join(reader.readtext(image_path, detail=0))
+# ---------------- TESSERACT PATH ----------------
+pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
 
-# ---------------- HELPERS ----------------
-def find_date(text):
-    match = re.search(r"\d{1,2}[ -]?[A-Za-z]{3}[ -]?\d{4}", text)
-    return match.group(0) if match else None
+# ================= IMAGE PREPROCESSING =================
+def preprocess_image(image_path):
+    img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+    if img is None:
+        raise FileNotFoundError(f"Image not found: {image_path}")
+
+    # Resize
+    img = cv2.resize(img, None, fx=1.7, fy=1.7, interpolation=cv2.INTER_CUBIC)
+
+    # Noise removal
+    img = cv2.medianBlur(img, 5)
+
+    # Adaptive threshold (best for handwriting)
+    img = cv2.adaptiveThreshold(
+        img, 255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY,
+        11, 2
+    )
+
+    # Morphology to connect broken letters
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
+    img = cv2.morphologyEx(img, cv2.MORPH_CLOSE, kernel)
+
+    return img
 
 
-def find_invoice_no(text):
-    match = re.search(r"Invoice\s*No\.?\s*([A-Z0-9]+)", text, re.IGNORECASE)
-    return match.group(1) if match else None
+# ================= OCR =================
+def extract_raw_text(image_path):
+    img = preprocess_image(image_path)
+    config = "--oem 3 --psm 6"
+    text = pytesseract.image_to_string(img, config=config)
+    return text
 
 
-def extract_amounts(text):
-    nums = re.findall(r"\d{1,3}(?:,\d{3})+(?:\.\d+)?", text)
-    nums = [float(n.replace(",", "")) for n in nums]
-    return sorted(nums)
+# ================= TEXT CLEANING =================
+def clean_ocr_text(text):
+    cleaned_lines = []
+    for line in text.split("\n"):
+        line = line.strip()
+
+        # Remove unwanted characters
+        line = re.sub(r"[^A-Za-z0-9 ₹:/.-]", "", line)
+
+        # Ignore very small junk lines
+        if len(line) < 3:
+            continue
+
+        cleaned_lines.append(line)
+
+    return "\n".join(cleaned_lines)
 
 
-# ---------------- MAIN LOGIC ----------------
-def extract_invoice_data(image_path):
-    text = extract_text(image_path)
+# ================= ENTITY EXTRACTION =================
+def extract_shop_name(text):
+    for line in text.split("\n"):
+        if line.isupper() and len(line) > 15:
+            return line.strip()
+    return None
 
-    amounts = extract_amounts(text)
-    final_amount = max(amounts) if amounts else None
-    tax = amounts[-2] if len(amounts) >= 2 else None
 
-    return {
-        "invoice_information": {
-            "invoice_type": "Tax Invoice" if "Tax Invoice" in text else None,
-            "invoice_number": find_invoice_no(text),
-            "invoice_date": find_date(text)
-        },
-        "seller_details": {
-            "seller_name": "Ace Mobile Manufacturer Pvt Ltd",
-            "seller_state": "Uttar Pradesh",
-            "seller_gstin": None
-        },
-        "buyer_details": {
-            "buyer_name": "The Mobile Planet",
-            "buyer_state": None,
-            "buyer_gstin": None
-        },
-        "financial_summary": {
-            "taxable_amount": final_amount - (tax * 2) if final_amount and tax else None,
-            "cgst_amount": tax,
-            "sgst_amount": tax,
-            "total_tax": tax * 2 if tax else None,
-            "final_payable_amount": final_amount,
-            "currency": "INR",
-            "total_quantity": None
-        }
+def extract_bill_number(text):
+    for line in text.split("\n"):
+        if "No" in line or "NO" in line:
+            nums = re.findall(r"\d+", line)
+            if nums:
+                return nums[0]
+    return None
+
+
+def extract_items(text):
+    items = []
+    for line in text.split("\n"):
+        match = re.search(r"([A-Za-z ]{3,})\s+(\d{1,4})$", line)
+        if match:
+            name = match.group(1).strip()
+            price = int(match.group(2))
+
+            # Validation
+            if price > 5:
+                items.append({
+                    "item": name,
+                    "price": price
+                })
+    return items
+
+
+def extract_total(text):
+    # Keyword-based extraction
+    match = re.search(r"(Total|Tota|Amt|Net)\s*[:\-]?\s*(\d+)", text, re.IGNORECASE)
+    if match:
+        return int(match.group(2))
+
+    # Fallback: largest number
+    nums = re.findall(r"\b\d+\b", text)
+    nums = [int(n) for n in nums if int(n) > 10]
+    return max(nums) if nums else None
+
+
+# ================= MAIN LOGIC =================
+def extract_bill_data(image_path):
+    raw_text = extract_raw_text(image_path)
+    clean_text = clean_ocr_text(raw_text)
+
+    print("\n----- RAW OCR TEXT -----\n")
+    print(raw_text)
+
+    print("\n----- CLEANED OCR TEXT -----\n")
+    print(clean_text)
+
+    final_data = {
+        "shop_name": extract_shop_name(clean_text),
+        "bill_number": extract_bill_number(clean_text),
+        "items": extract_items(clean_text),
+        "total_amount": extract_total(clean_text),
+        "currency": "INR"
     }
 
+    return final_data
 
-# ---------------- RUN ----------------
+
+# ================= RUN =================
 if __name__ == "__main__":
-    image = "data/sample_invoice.jpg"
+    image_path = "data/good-hand-written-bill.jpg"
+
     os.makedirs("output", exist_ok=True)
 
-    data = extract_invoice_data(image)
+    result = extract_bill_data(image_path)
 
-    with open("output/extracted_invoice.json", "w") as f:
-        json.dump(data, f, indent=2)
+    print("\n----- FINAL CLEAN OUTPUT -----\n")
+    print(json.dumps(result, indent=2))
 
-    print(json.dumps(data, indent=2))
+    with open("output/final_bill.json", "w") as f:
+        json.dump(result, f, indent=2)
